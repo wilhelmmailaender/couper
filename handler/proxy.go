@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -41,13 +40,13 @@ var (
 )
 
 type Proxy struct {
-	evalContext *hcl.EvalContext
-	log         *logrus.Entry
-	mustBuffer  bool
-	options     *ProxyOptions
-	originURL   *url.URL
-	transport   *http.Transport
-	upstreamLog *logging.AccessLog
+	evalContext  *hcl.EvalContext
+	log          *logrus.Entry
+	bufferOption eval.BufferOption
+	options      *ProxyOptions
+	originURL    *url.URL
+	transport    *http.Transport
+	upstreamLog  *logging.AccessLog
 }
 
 type ProxyOptions struct {
@@ -117,12 +116,12 @@ func NewProxy(options *ProxyOptions, log *logrus.Entry, evalCtx *hcl.EvalContext
 	env.DecodeWithPrefix(&logConf, "BACKEND_")
 
 	proxy := &Proxy{
-		evalContext: evalCtx,
-		log:         log,
-		mustBuffer:  mustBuffer(options),
-		options:     options,
-		originURL:   originURL,
-		upstreamLog: logging.NewAccessLog(&logConf, log.Logger),
+		bufferOption: eval.MustBuffer(options.Context),
+		evalContext:  evalCtx,
+		log:          log,
+		options:      options,
+		originURL:    originURL,
+		upstreamLog:  logging.NewAccessLog(&logConf, log.Logger),
 	}
 
 	var tlsConf *tls.Config
@@ -310,7 +309,7 @@ func (p *Proxy) setRoundtripContext(req *http.Request, beresp *http.Response) {
 		headerCtx = req.Header
 	}
 
-	evalCtx := eval.NewHTTPContext(p.evalContext, p.mustBuffer, req, bereq, beresp)
+	evalCtx := eval.NewHTTPContext(p.evalContext, p.bufferOption, req, bereq, beresp)
 
 	// Remove blacklisted headers after evaluation to be accessible within our context configuration.
 	if attrCtx == attrReqHeaders {
@@ -330,32 +329,6 @@ func (p *Proxy) setRoundtripContext(req *http.Request, beresp *http.Response) {
 	if beresp != nil && isCorsRequest(req) {
 		p.setCorsRespHeaders(headerCtx, req)
 	}
-}
-
-// mustBuffer determines if any of the hcl.bodies makes use of 'post' or 'json_body'.
-func mustBuffer(opts *ProxyOptions) bool {
-	for _, body := range opts.Context {
-		attrs, err := body.JustAttributes()
-		if err != nil {
-			return false
-		}
-		for _, attr := range attrs {
-			for _, traversal := range attr.Expr.Variables() {
-				if traversal.RootName() != "req" {
-					continue
-				}
-				for _, step := range traversal[1:] {
-					nameField := reflect.ValueOf(step).FieldByName("Name")
-					name := nameField.String()
-					switch name {
-					case "json_body", "post":
-						return true
-					}
-				}
-			}
-		}
-	}
-	return false
 }
 
 func isCorsRequest(req *http.Request) bool {
